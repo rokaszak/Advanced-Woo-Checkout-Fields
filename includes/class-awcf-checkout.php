@@ -40,14 +40,24 @@ class AWCF_Checkout {
         // Section 1: Ship to different address
         add_filter( 'woocommerce_ship_to_different_address_checked', array( $this, 'force_ship_to_different_address' ) );
         
-        // Section 2 & 3: Modify checkout fields
+        // Section titles via gettext filter
+        add_filter( 'gettext', array( $this, 'modify_checkout_titles' ), 20, 3 );
+        
+        // Section 2: Set required/disabled status for billing and shipping fields (priority 10, before checkout_fields)
+        add_filter( 'woocommerce_billing_fields', array( $this, 'modify_billing_fields' ), 10 );
+        add_filter( 'woocommerce_shipping_fields', array( $this, 'modify_shipping_fields' ), 10 );
+        
+        // Section 2 & 3: Modify checkout fields (add custom fields)
         add_filter( 'woocommerce_checkout_fields', array( $this, 'modify_checkout_fields' ), 20 );
+        
+        // Reorder checkout sections
+        add_action( 'woocommerce_checkout_before_customer_details', array( $this, 'maybe_reorder_checkout_sections' ), 1 );
         
         // VAT compliance: Display info message
         add_action( 'woocommerce_after_checkout_billing_form', array( $this, 'display_company_info_message' ) );
         
         // Validation
-        add_action( 'woocommerce_checkout_process', array( $this, 'validate_checkout' ) );
+        add_action( 'woocommerce_after_checkout_validation', array( $this, 'validate_checkout' ), 10, 2 );
         
         // Save order meta (HPOS compatible)
         add_action( 'woocommerce_checkout_create_order', array( $this, 'save_order_meta' ), 20, 2 );
@@ -82,6 +92,74 @@ class AWCF_Checkout {
     }
 
     /**
+     * Modify checkout section titles via gettext filter
+     *
+     * @param string $translated Translated text.
+     * @param string $text       Original text.
+     * @param string $domain     Text domain.
+     * @return string
+     */
+    public function modify_checkout_titles( $translated, $text, $domain ) {
+        // Only process woocommerce domain
+        if ( 'woocommerce' !== $domain ) {
+            return $translated;
+        }
+
+        // Only process specific strings to avoid unnecessary processing
+        if ( 'Billing details' !== $text && 'Billing &amp; Shipping' !== $text && 'Ship to a different address?' !== $text ) {
+            return $translated;
+        }
+
+        // Use static variable to prevent recursion
+        static $is_processing = false;
+        if ( $is_processing ) {
+            return $translated;
+        }
+        $is_processing = true;
+
+        $settings = AWCF()->get_settings();
+        $defaults = AWCF()->get_default_settings();
+
+        // Modify billing title
+        if ( 'Billing details' === $text || 'Billing &amp; Shipping' === $text ) {
+            $custom_title = $settings['billing_title'] ?? $defaults['billing_title'];
+            if ( ! empty( $custom_title ) && $custom_title !== $defaults['billing_title'] ) {
+                $is_processing = false;
+                return $custom_title;
+            }
+        }
+
+        // Modify shipping title / checkbox label
+        if ( 'Ship to a different address?' === $text ) {
+            $custom_title = $settings['shipping_title'] ?? $defaults['shipping_title'];
+            if ( ! empty( $custom_title ) && $custom_title !== $defaults['shipping_title'] ) {
+                $is_processing = false;
+                return $custom_title;
+            }
+        }
+
+        $is_processing = false;
+        return $translated;
+    }
+
+    /**
+     * Maybe reorder checkout sections (shipping first)
+     */
+    public function maybe_reorder_checkout_sections() {
+        $settings = AWCF()->get_settings();
+        
+        if ( ( $settings['checkout_order'] ?? 'billing_first' ) === 'shipping_first' ) {
+            // Remove default actions
+            remove_action( 'woocommerce_checkout_billing', array( WC()->checkout(), 'checkout_form_billing' ) );
+            remove_action( 'woocommerce_checkout_shipping', array( WC()->checkout(), 'checkout_form_shipping' ) );
+            
+            // Re-add in reversed order
+            add_action( 'woocommerce_checkout_billing', array( WC()->checkout(), 'checkout_form_shipping' ), 10 );
+            add_action( 'woocommerce_checkout_shipping', array( WC()->checkout(), 'checkout_form_billing' ), 10 );
+        }
+    }
+
+    /**
      * Add inline styles
      */
     public function add_inline_styles() {
@@ -91,13 +169,11 @@ class AWCF_Checkout {
 
         $settings = AWCF()->get_settings();
         
-        // Hide the ship to different address checkbox if forced
+        // Ensure shipping address is always visible when forced (checkbox removal handled by JS)
         if ( ! empty( $settings['force_ship_to_different'] ) ) {
             ?>
             <style type="text/css">
-                .woocommerce-shipping-fields #ship-to-different-address {
-                    display: none !important;
-                }
+                /* Ensure shipping address is always visible */
                 .woocommerce-shipping-fields .shipping_address {
                     display: block !important;
                 }
@@ -123,6 +199,109 @@ class AWCF_Checkout {
     }
 
     /**
+     * Get field settings with legacy support
+     *
+     * @param array  $settings Plugin settings.
+     * @param string $field_key Field key.
+     * @return array
+     */
+    private function get_field_settings( $settings, $field_key ) {
+        // Check for new format
+        if ( isset( $settings['fields'][ $field_key ] ) && is_array( $settings['fields'][ $field_key ] ) ) {
+            return $settings['fields'][ $field_key ];
+        }
+        
+        // Legacy format conversion
+        if ( isset( $settings['fields'][ $field_key ] ) && is_string( $settings['fields'][ $field_key ] ) ) {
+            $legacy_state = $settings['fields'][ $field_key ];
+            return array(
+                'status'   => $legacy_state === 'disabled' ? 'disabled' : 'enabled',
+                'required' => $legacy_state === 'required',
+            );
+        }
+        
+        // Default - field enabled, not required (let WooCommerce defaults handle it)
+        return array(
+            'status'   => 'enabled',
+            'required' => null, // null means don't override WooCommerce default
+        );
+    }
+
+    /**
+     * Modify billing fields - set required/disabled status
+     *
+     * @param array $fields Billing fields.
+     * @return array
+     */
+    public function modify_billing_fields( $fields ) {
+        $settings = AWCF()->get_settings();
+
+        if ( ! empty( $settings['fields'] ) && is_array( $settings['fields'] ) ) {
+            foreach ( $settings['fields'] as $field_key => $field_data ) {
+                // Only process billing fields
+                if ( strpos( $field_key, 'billing_' ) !== 0 ) {
+                    continue;
+                }
+
+                // Get field settings (handles both new and legacy format)
+                $field_settings = $this->get_field_settings( $settings, $field_key );
+
+                // Handle disabled status
+                if ( $field_settings['status'] === 'disabled' ) {
+                    if ( isset( $fields[ $field_key ] ) ) {
+                        unset( $fields[ $field_key ] );
+                    }
+                    continue;
+                }
+
+                // Handle required setting
+                if ( isset( $fields[ $field_key ] ) && $field_settings['required'] !== null ) {
+                    $fields[ $field_key ]['required'] = (bool) $field_settings['required'];
+                }
+            }
+        }
+
+        return $fields;
+    }
+
+    /**
+     * Modify shipping fields - set required/disabled status
+     *
+     * @param array $fields Shipping fields.
+     * @return array
+     */
+    public function modify_shipping_fields( $fields ) {
+        $settings = AWCF()->get_settings();
+
+        if ( ! empty( $settings['fields'] ) && is_array( $settings['fields'] ) ) {
+            foreach ( $settings['fields'] as $field_key => $field_data ) {
+                // Only process shipping fields
+                if ( strpos( $field_key, 'shipping_' ) !== 0 ) {
+                    continue;
+                }
+
+                // Get field settings (handles both new and legacy format)
+                $field_settings = $this->get_field_settings( $settings, $field_key );
+
+                // Handle disabled status
+                if ( $field_settings['status'] === 'disabled' ) {
+                    if ( isset( $fields[ $field_key ] ) ) {
+                        unset( $fields[ $field_key ] );
+                    }
+                    continue;
+                }
+
+                // Handle required setting
+                if ( isset( $fields[ $field_key ] ) && $field_settings['required'] !== null ) {
+                    $fields[ $field_key ]['required'] = (bool) $field_settings['required'];
+                }
+            }
+        }
+
+        return $fields;
+    }
+
+    /**
      * Modify checkout fields based on settings
      *
      * @param array $fields Checkout fields.
@@ -131,38 +310,21 @@ class AWCF_Checkout {
     public function modify_checkout_fields( $fields ) {
         $settings = AWCF()->get_settings();
 
-        // Section 2: Apply field controls
-        if ( ! empty( $settings['fields'] ) && is_array( $settings['fields'] ) ) {
-            foreach ( $settings['fields'] as $field_key => $state ) {
-                // Determine section (billing or shipping)
-                if ( strpos( $field_key, 'billing_' ) === 0 ) {
-                    $section = 'billing';
-                } elseif ( strpos( $field_key, 'shipping_' ) === 0 ) {
-                    $section = 'shipping';
-                } else {
-                    continue;
-                }
-
-                // Check if field exists
-                if ( ! isset( $fields[ $section ][ $field_key ] ) ) {
-                    continue;
-                }
-
-                switch ( $state ) {
-                    case 'disabled':
-                        unset( $fields[ $section ][ $field_key ] );
-                        break;
-                    case 'required':
-                        $fields[ $section ][ $field_key ]['required'] = true;
-                        break;
-                    case 'enabled':
-                        $fields[ $section ][ $field_key ]['required'] = false;
-                        break;
-                }
-            }
+        // Add shipping phone field if it doesn't exist
+        if ( ! isset( $fields['shipping']['shipping_phone'] ) ) {
+            $fields['shipping']['shipping_phone'] = array(
+                'type'        => 'tel',
+                'label'       => __( 'Phone', 'woocommerce' ),
+                'required'    => false,
+                'class'       => array( 'form-row-wide' ),
+                'clear'       => true,
+                'priority'    => 100,
+                'validate'    => array( 'phone' ),
+                'autocomplete' => 'tel',
+            );
         }
 
-        // Section 3: VAT Compliance Mode
+        // VAT Compliance Mode: Add company checkbox and fields
         if ( ! empty( $settings['vat_mode_enabled'] ) ) {
             $defaults = AWCF()->get_default_settings();
 
@@ -177,6 +339,7 @@ class AWCF_Checkout {
             );
 
             // Add company fields (hidden by default, shown via JS when checkbox is checked)
+            // These fields are NOT required in PHP - requirement is handled by JS and validation
             $fields['billing']['billing_company_name'] = array(
                 'type'        => 'text',
                 'label'       => $settings['company_name_label'] ?? $defaults['company_name_label'],
@@ -246,59 +409,40 @@ class AWCF_Checkout {
 
     /**
      * Validate checkout fields
+     *
+     * Note: Billing and shipping field validation is handled natively by WooCommerce
+     * based on the 'required' flag set via woocommerce_billing_fields and woocommerce_shipping_fields filters.
+     * This method only validates custom VAT compliance fields.
+     *
+     * @param array    $data   Posted checkout data.
+     * @param WP_Error $errors Validation errors.
      */
-    public function validate_checkout() {
+    public function validate_checkout( $data, $errors ) {
         $settings = AWCF()->get_settings();
 
-        // Validate forced ship to different address
-        if ( ! empty( $settings['force_ship_to_different'] ) ) {
-            // Check if shipping fields are filled
-            $shipping_fields = array( 'shipping_first_name', 'shipping_last_name', 'shipping_address_1', 'shipping_city', 'shipping_postcode', 'shipping_country' );
-            
-            foreach ( $shipping_fields as $field ) {
-                // Only validate if the field is not disabled
-                $field_state = $settings['fields'][ $field ] ?? 'enabled';
-                if ( $field_state === 'disabled' ) {
-                    continue;
-                }
-
-                // phpcs:ignore WordPress.Security.NonceVerification.Missing
-                if ( empty( $_POST[ $field ] ) ) {
-                    wc_add_notice(
-                        sprintf(
-                            /* translators: %s: field name */
-                            __( '%s is a required field.', 'advanced-woo-checkout-fields' ),
-                            '<strong>' . esc_html( ucwords( str_replace( array( 'shipping_', '_' ), array( '', ' ' ), $field ) ) ) . '</strong>'
-                        ),
-                        'error'
-                    );
-                }
-            }
-        }
-
-        // Validate VAT compliance fields
+        // Validate VAT compliance fields (conditional validation)
         if ( ! empty( $settings['vat_mode_enabled'] ) ) {
-            // phpcs:ignore WordPress.Security.NonceVerification.Missing
-            $is_company = isset( $_POST['billing_is_company'] ) && ! empty( $_POST['billing_is_company'] );
+            $is_company = isset( $data['billing_is_company'] ) && ! empty( $data['billing_is_company'] );
 
             if ( $is_company ) {
+                $defaults = AWCF()->get_default_settings();
                 $company_fields = array(
-                    'billing_company_name'    => $settings['company_name_label'] ?? __( 'Company Name', 'advanced-woo-checkout-fields' ),
-                    'billing_company_code'    => $settings['company_code_label'] ?? __( 'Company Code', 'advanced-woo-checkout-fields' ),
-                    'billing_company_vat'     => $settings['company_vat_label'] ?? __( 'Company VAT Code', 'advanced-woo-checkout-fields' ),
-                    'billing_company_address' => $settings['company_address_label'] ?? __( 'Company Address', 'advanced-woo-checkout-fields' ),
+                    'billing_company_name'    => $settings['company_name_label'] ?? $defaults['company_name_label'],
+                    'billing_company_code'    => $settings['company_code_label'] ?? $defaults['company_code_label'],
+                    'billing_company_vat'     => $settings['company_vat_label'] ?? $defaults['company_vat_label'],
+                    'billing_company_address' => $settings['company_address_label'] ?? $defaults['company_address_label'],
                 );
 
                 foreach ( $company_fields as $field_key => $field_label ) {
-                    // phpcs:ignore WordPress.Security.NonceVerification.Missing
-                    if ( empty( $_POST[ $field_key ] ) ) {
-                        wc_add_notice(
+                    if ( empty( $data[ $field_key ] ) ) {
+                        $errors->add(
+                            $field_key . '_required',
                             sprintf(
                                 /* translators: %s: field name */
-                                __( '%s is a required field.', 'advanced-woo-checkout-fields' ),
-                                '<strong>' . esc_html( $field_label ) . '</strong>'
+                                __( '<strong>%s</strong> is a required field.', 'woocommerce' ),
+                                esc_html( $field_label )
                             ),
-                            'error'
+                            array( 'id' => $field_key )
                         );
                     }
                 }
@@ -500,7 +644,11 @@ class AWCF_Checkout {
 
         $settings = AWCF()->get_settings();
 
-        if ( empty( $settings['vat_mode_enabled'] ) ) {
+        // Load script if VAT mode is enabled OR if force ship to different is enabled
+        $vat_mode_enabled = ! empty( $settings['vat_mode_enabled'] );
+        $force_ship_to_different = ! empty( $settings['force_ship_to_different'] );
+
+        if ( ! $vat_mode_enabled && ! $force_ship_to_different ) {
             return;
         }
 
@@ -510,6 +658,17 @@ class AWCF_Checkout {
             array( 'jquery' ),
             AWCF_VERSION,
             true
+        );
+
+        // Localize script with settings and labels
+        wp_localize_script(
+            'awcf-checkout',
+            'awcf_params',
+            array(
+                'force_ship_to_different' => $force_ship_to_different,
+                'vat_mode_enabled'        => $vat_mode_enabled,
+                'optional_text'           => esc_html__( '(optional)', 'woocommerce' ),
+            )
         );
     }
 }

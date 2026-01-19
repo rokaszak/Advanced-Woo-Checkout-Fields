@@ -49,11 +49,15 @@
 }
 
 .awcf-fields-table .column-field {
-    width: 60%;
+    width: 50%;
 }
 
 .awcf-fields-table .column-status {
-    width: 40%;
+    width: 25%;
+}
+
+.awcf-fields-table .column-required {
+    width: 25%;
 }
 
 .awcf-fields-table td.column-field strong {
@@ -72,6 +76,16 @@
 .awcf-fields-table select {
     width: 100%;
     max-width: 200px;
+}
+
+/* Disabled field row styling */
+.awcf-fields-table tr.awcf-field-disabled {
+    opacity: 0.5;
+}
+
+.awcf-fields-table tr.awcf-field-disabled .column-required select {
+    pointer-events: none;
+    background-color: #f0f0f1;
 }
 
 /* Form table adjustments */
@@ -120,7 +134,8 @@
     }
     
     .awcf-fields-table .column-field,
-    .awcf-fields-table .column-status {
+    .awcf-fields-table .column-status,
+    .awcf-fields-table .column-required {
         width: auto;
     }
     

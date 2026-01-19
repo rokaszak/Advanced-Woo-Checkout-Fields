@@ -90,8 +90,16 @@ final class Advanced_Woo_Checkout_Fields {
      */
     public function get_default_settings() {
         return array(
+            // Section 1: Checkout Layout
             'force_ship_to_different'  => false,
+            'billing_title'            => __( 'Billing details', 'woocommerce' ),
+            'shipping_title'           => __( 'Ship to a different address?', 'woocommerce' ),
+            'checkout_order'           => 'billing_first',
+            
+            // Section 2: Field Controls
             'fields'                   => array(),
+            
+            // Section 3: VAT Compliance
             'vat_mode_enabled'         => false,
             'vat_checkbox_label'       => __( 'Perka įmonė? (nebūtinas)', 'advanced-woo-checkout-fields' ),
             'company_name_label'       => __( 'Company Name', 'advanced-woo-checkout-fields' ),
@@ -237,6 +245,7 @@ final class Advanced_Woo_Checkout_Fields {
                 'shipping_city'       => __( 'Town / City', 'woocommerce' ),
                 'shipping_state'      => __( 'State / County', 'woocommerce' ),
                 'shipping_postcode'   => __( 'Postcode / ZIP', 'woocommerce' ),
+                'shipping_phone'      => __( 'Phone', 'woocommerce' ),
             ),
         );
     }
