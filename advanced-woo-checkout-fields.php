@@ -1,0 +1,255 @@
+<?php
+/**
+ * Plugin Name: Advanced Woo Checkout Fields
+ * Plugin URI: https://proven.lt
+ * Description: Provides advanced control over WooCommerce checkout fields including forced shipping address, field enable/disable/required toggles, and VAT compliance mode with dynamic company fields.
+ * Version: 1.0.0
+ * Author: Rokas Zakarauskas
+ * Author URI: https://proven.lt
+ * Text Domain: advanced-woo-checkout-fields
+ * Domain Path: /languages
+ * Requires at least: 5.8
+ * Requires PHP: 7.4
+ * WC requires at least: 6.0
+ * WC tested up to: 9.0
+ * License: GPL v2 or later
+ * License URI: https://www.gnu.org/licenses/gpl-2.0.html
+ */
+
+if ( ! defined( 'ABSPATH' ) ) {
+    exit;
+}
+
+// Plugin constants
+define( 'AWCF_VERSION', '1.0.0' );
+define( 'AWCF_PLUGIN_FILE', __FILE__ );
+define( 'AWCF_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
+define( 'AWCF_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
+define( 'AWCF_PLUGIN_BASENAME', plugin_basename( __FILE__ ) );
+
+/**
+ * Declare HPOS compatibility
+ */
+add_action( 'before_woocommerce_init', function() {
+    if ( class_exists( \Automattic\WooCommerce\Utilities\FeaturesUtil::class ) ) {
+        \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'custom_order_tables', __FILE__, true );
+    }
+} );
+
+/**
+ * Main plugin class
+ */
+final class Advanced_Woo_Checkout_Fields {
+
+    /**
+     * Single instance of the class
+     *
+     * @var Advanced_Woo_Checkout_Fields
+     */
+    private static $instance = null;
+
+    /**
+     * Plugin settings
+     *
+     * @var array
+     */
+    private $settings = array();
+
+    /**
+     * Get single instance of the class
+     *
+     * @return Advanced_Woo_Checkout_Fields
+     */
+    public static function instance() {
+        if ( is_null( self::$instance ) ) {
+            self::$instance = new self();
+        }
+        return self::$instance;
+    }
+
+    /**
+     * Constructor
+     */
+    private function __construct() {
+        $this->load_settings();
+        $this->includes();
+        $this->init_hooks();
+    }
+
+    /**
+     * Load plugin settings
+     */
+    private function load_settings() {
+        $this->settings = get_option( 'awcf_settings', $this->get_default_settings() );
+    }
+
+    /**
+     * Get default settings
+     *
+     * @return array
+     */
+    public function get_default_settings() {
+        return array(
+            'force_ship_to_different'  => false,
+            'fields'                   => array(),
+            'vat_mode_enabled'         => false,
+            'vat_checkbox_label'       => __( 'Perka įmonė? (nebūtinas)', 'advanced-woo-checkout-fields' ),
+            'company_name_label'       => __( 'Company Name', 'advanced-woo-checkout-fields' ),
+            'company_code_label'       => __( 'Company Code', 'advanced-woo-checkout-fields' ),
+            'company_vat_label'        => __( 'Company VAT Code', 'advanced-woo-checkout-fields' ),
+            'company_address_label'    => __( 'Company Address', 'advanced-woo-checkout-fields' ),
+            'company_info_message'     => __( 'PVM Sąskaita faktūra sugeneruojama automatiškai po užsakymo ir PDF formatu prisegama prie užsakymo el. laiško.', 'advanced-woo-checkout-fields' ),
+        );
+    }
+
+    /**
+     * Get plugin settings
+     *
+     * @return array
+     */
+    public function get_settings() {
+        return $this->settings;
+    }
+
+    /**
+     * Get a specific setting
+     *
+     * @param string $key Setting key.
+     * @param mixed  $default Default value.
+     * @return mixed
+     */
+    public function get_setting( $key, $default = null ) {
+        if ( isset( $this->settings[ $key ] ) ) {
+            return $this->settings[ $key ];
+        }
+        
+        $defaults = $this->get_default_settings();
+        if ( isset( $defaults[ $key ] ) ) {
+            return $defaults[ $key ];
+        }
+        
+        return $default;
+    }
+
+    /**
+     * Include required files
+     */
+    private function includes() {
+        require_once AWCF_PLUGIN_DIR . 'includes/class-awcf-admin.php';
+        require_once AWCF_PLUGIN_DIR . 'includes/class-awcf-checkout.php';
+    }
+
+    /**
+     * Initialize hooks
+     */
+    private function init_hooks() {
+        // Check WooCommerce dependency
+        add_action( 'plugins_loaded', array( $this, 'check_woocommerce' ) );
+        
+        // Load text domain
+        add_action( 'init', array( $this, 'load_textdomain' ) );
+        
+        // Plugin action links
+        add_filter( 'plugin_action_links_' . AWCF_PLUGIN_BASENAME, array( $this, 'plugin_action_links' ) );
+    }
+
+    /**
+     * Check if WooCommerce is active
+     */
+    public function check_woocommerce() {
+        if ( ! class_exists( 'WooCommerce' ) ) {
+            add_action( 'admin_notices', array( $this, 'woocommerce_missing_notice' ) );
+            return;
+        }
+
+        // Initialize admin and checkout classes
+        AWCF_Admin::instance();
+        AWCF_Checkout::instance();
+    }
+
+    /**
+     * WooCommerce missing notice
+     */
+    public function woocommerce_missing_notice() {
+        ?>
+        <div class="error">
+            <p>
+                <?php
+                printf(
+                    /* translators: %s: WooCommerce plugin name */
+                    esc_html__( '%1$s requires %2$s to be installed and active.', 'advanced-woo-checkout-fields' ),
+                    '<strong>' . esc_html__( 'Advanced Woo Checkout Fields', 'advanced-woo-checkout-fields' ) . '</strong>',
+                    '<strong>' . esc_html__( 'WooCommerce', 'advanced-woo-checkout-fields' ) . '</strong>'
+                );
+                ?>
+            </p>
+        </div>
+        <?php
+    }
+
+    /**
+     * Load plugin text domain
+     */
+    public function load_textdomain() {
+        load_plugin_textdomain( 'advanced-woo-checkout-fields', false, dirname( AWCF_PLUGIN_BASENAME ) . '/languages' );
+    }
+
+    /**
+     * Add plugin action links
+     *
+     * @param array $links Plugin action links.
+     * @return array
+     */
+    public function plugin_action_links( $links ) {
+        $plugin_links = array(
+            '<a href="' . admin_url( 'admin.php?page=awcf-settings' ) . '">' . esc_html__( 'Settings', 'advanced-woo-checkout-fields' ) . '</a>',
+        );
+        return array_merge( $plugin_links, $links );
+    }
+
+    /**
+     * Get default checkout fields
+     *
+     * @return array
+     */
+    public function get_default_checkout_fields() {
+        return array(
+            'billing' => array(
+                'billing_first_name' => __( 'First name', 'woocommerce' ),
+                'billing_last_name'  => __( 'Last name', 'woocommerce' ),
+                'billing_company'    => __( 'Company name', 'woocommerce' ),
+                'billing_country'    => __( 'Country / Region', 'woocommerce' ),
+                'billing_address_1'  => __( 'Street address', 'woocommerce' ),
+                'billing_address_2'  => __( 'Apartment, suite, unit, etc.', 'woocommerce' ),
+                'billing_city'       => __( 'Town / City', 'woocommerce' ),
+                'billing_state'      => __( 'State / County', 'woocommerce' ),
+                'billing_postcode'   => __( 'Postcode / ZIP', 'woocommerce' ),
+                'billing_phone'      => __( 'Phone', 'woocommerce' ),
+                'billing_email'      => __( 'Email address', 'woocommerce' ),
+            ),
+            'shipping' => array(
+                'shipping_first_name' => __( 'First name', 'woocommerce' ),
+                'shipping_last_name'  => __( 'Last name', 'woocommerce' ),
+                'shipping_company'    => __( 'Company name', 'woocommerce' ),
+                'shipping_country'    => __( 'Country / Region', 'woocommerce' ),
+                'shipping_address_1'  => __( 'Street address', 'woocommerce' ),
+                'shipping_address_2'  => __( 'Apartment, suite, unit, etc.', 'woocommerce' ),
+                'shipping_city'       => __( 'Town / City', 'woocommerce' ),
+                'shipping_state'      => __( 'State / County', 'woocommerce' ),
+                'shipping_postcode'   => __( 'Postcode / ZIP', 'woocommerce' ),
+            ),
+        );
+    }
+}
+
+/**
+ * Returns the main instance of the plugin
+ *
+ * @return Advanced_Woo_Checkout_Fields
+ */
+function AWCF() {
+    return Advanced_Woo_Checkout_Fields::instance();
+}
+
+// Initialize the plugin
+AWCF();
